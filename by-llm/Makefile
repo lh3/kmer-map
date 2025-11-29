@@ -1,7 +1,7 @@
 CC=			gcc
 CFLAGS=		-g -Wall -O3 -std=c99
 CXXFLAGS=	$(CFLAGS)
-PROG=		kmer-map-gemini3a kmer-map-gemini3b
+PROG=		kmer-map-gemini3a kmer-map-gemini3b kmer-map-gpt5a
 
 ifneq ($(asan),)
 	CFLAGS+=-fsanitize=address
@@ -20,6 +20,9 @@ kmer-map-gemini3a:kmer-map-gemini3a.o
 		$(CC) -o $@ $< -lz
 
 kmer-map-gemini3b:kmer-map-gemini3b.o
+		$(CC) -o $@ $< -lz
+
+kmer-map-gpt5a:kmer-map-gpt5a.o
 		$(CC) -o $@ $< -lz
 
 clean:
