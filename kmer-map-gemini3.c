@@ -1,21 +1,41 @@
-#define _XOPEN_SOURCE 700 // For zlib/POSIX functions if needed, though we strictly follow C99 for logic
+#define _XOPEN_SOURCE 700
 #include <zlib.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 
-/* Dependencies: kseq.h and khashl.h must be available */
+/* Dependencies */
 #include "kseq.h"
 #include "khashl.h"
 
-// Initialize kseq with zlib
+// Initialize kseq
 KSEQ_INIT(gzFile, gzread)
 
-// Define Hash Map: Key=uint64_t, Value=char* (read name)
+// Define Hash Map
 KHASHL_MAP_INIT(KH_LOCAL, kmer_map_t, kmap, uint64_t, char*, kh_hash_uint64, kh_eq_generic)
 
-// C99 compliant implementation of strdup
+// Global lookup table (populated in init_tables)
+unsigned char seq_nt4_table[256];
+
+// Initialize the DNA table safely
+void init_tables() {
+    // 1. Set everything to 4 (invalid) by default
+    memset(seq_nt4_table, 4, 256);
+    
+    // 2. Explicitly map valid bases to 0-3
+    // A/a -> 0
+    seq_nt4_table['A'] = 0; seq_nt4_table['a'] = 0;
+    // C/c -> 1
+    seq_nt4_table['C'] = 1; seq_nt4_table['c'] = 1;
+    // G/g -> 2
+    seq_nt4_table['G'] = 2; seq_nt4_table['g'] = 2;
+    // T/t -> 3 (and U/u)
+    seq_nt4_table['T'] = 3; seq_nt4_table['t'] = 3;
+    seq_nt4_table['U'] = 3; seq_nt4_table['u'] = 3;
+}
+
+// C99-compliant strdup
 char *c99_strdup(const char *s) {
     if (!s) return NULL;
     size_t len = strlen(s) + 1;
@@ -24,25 +44,11 @@ char *c99_strdup(const char *s) {
     return new_s;
 }
 
-// DNA encoding table: A=0, C=1, G=2, T=3, Others=4
-unsigned char seq_nt4_table[256] = {
-    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
-    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
-    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,
-    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
-    4, 0, 4, 1,  4, 4, 4, 2,  4, 4, 4, 4,  4, 4, 4, 4, // A, C, G
-    4, 4, 4, 4,  3, 3, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, // T, U
-    4, 0, 4, 1,  4, 4, 4, 2,  4, 4, 4, 4,  4, 4, 4, 4, // a, c, g
-    4, 4, 4, 4,  3, 3, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, // t, u
-    // ... rest default to 4 (initialized implicitly if static, but explicit here for clarity)
-};
-
-// Helper to encode a sequence of specific length into uint64
 int encode_kmer(const char *seq, int len, uint64_t *val) {
     uint64_t x = 0;
     for (int i = 0; i < len; ++i) {
         uint8_t c = seq_nt4_table[(uint8_t)seq[i]];
-        if (c > 3) return 0; // Invalid base (N)
+        if (c > 3) return 0; // 4 is returned for N, newlines, nulls, etc.
         x = (x << 2) | c;
     }
     *val = x;
@@ -50,6 +56,9 @@ int encode_kmer(const char *seq, int len, uint64_t *val) {
 }
 
 int main(int argc, char *argv[]) {
+    // Initialize the lookup table immediately
+    init_tables();
+
     if (argc != 3) {
         fprintf(stderr, "Usage: ./find_kmers <queries.fasta> <genome.fasta>\n");
         return 1;
@@ -63,7 +72,7 @@ int main(int argc, char *argv[]) {
     int k_len = 0; 
 
     // ----------------------------------------------------------------
-    // 1. Load Queries and Detect K
+    // 1. Load Queries
     // ----------------------------------------------------------------
     fprintf(stderr, "[INFO] Reading queries from %s...\n", argv[1]);
     fp_query = gzopen(argv[1], "r");
@@ -72,17 +81,15 @@ int main(int argc, char *argv[]) {
     ks = kseq_init(fp_query);
     uint64_t loaded_count = 0;
 
-    // Detect K from first record
+    // Detect K
     if (kseq_read(ks) >= 0) {
         k_len = ks->seq.l;
         if (k_len > 31) {
             fprintf(stderr, "[ERROR] K-mer length %d exceeds limit of 31.\n", k_len);
             return 1;
         }
-        if (k_len == 0) {
-            fprintf(stderr, "[ERROR] Empty sequence detected.\n");
-            return 1;
-        }
+        if (k_len == 0) return 1;
+
         fprintf(stderr, "[INFO] Detected k-mer length: %d\n", k_len);
 
         uint64_t packed;
@@ -96,11 +103,9 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // Load remaining records
+    // Load rest
     while (kseq_read(ks) >= 0) {
-        if (ks->seq.l != k_len) {
-            continue; // Skip queries of different length
-        }
+        if (ks->seq.l != k_len) continue;
         uint64_t packed;
         if (encode_kmer(ks->seq.s, k_len, &packed)) {
             itr = kmap_put(h, packed, &absent);
@@ -116,7 +121,7 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "[INFO] Loaded %lu unique valid %d-mers.\n", (unsigned long)loaded_count, k_len);
 
     // ----------------------------------------------------------------
-    // 2. Scan Genome and Output BED
+    // 2. Scan Genome
     // ----------------------------------------------------------------
     fprintf(stderr, "[INFO] Scanning genome %s...\n", argv[2]);
     fp_genome = gzopen(argv[2], "r");
@@ -141,21 +146,17 @@ int main(int argc, char *argv[]) {
                 len++;
                 
                 if (len >= k_len) {
-                    // BED Coordinates:
-                    // chromStart (0-based inclusive) = i - k_len + 1
-                    // chromEnd   (0-based exclusive) = i + 1
                     int start_pos = i - k_len + 1;
                     int end_pos   = i + 1;
 
-                    // Check Forward
+                    // Forward Match
                     itr = kmap_get(h, fwd_k);
                     if (itr != kh_end(h)) {
-                        // chrom, start, end, name, score, strand
                         printf("%s\t%d\t%d\t%s\t0\t+\n", 
                                ks->name.s, start_pos, end_pos, kh_val(h, itr));
                     }
                     
-                    // Check Reverse
+                    // Reverse Match
                     itr = kmap_get(h, rev_k);
                     if (itr != kh_end(h)) {
                         printf("%s\t%d\t%d\t%s\t0\t-\n", 
@@ -173,7 +174,6 @@ int main(int argc, char *argv[]) {
     kseq_destroy(ks);
     gzclose(fp_genome);
     
-    // Free map
     for (itr = 0; itr < kh_end(h); ++itr) {
         if (kh_exist(h, itr)) free(kh_val(h, itr));
     }
