@@ -5,37 +5,33 @@
 #include <string.h>
 #include <stdint.h>
 
-/* Dependencies */
 #include "kseq.h"
 #include "khashl.h"
 
-// Initialize kseq
 KSEQ_INIT(gzFile, gzread)
-
-// Define Hash Map
 KHASHL_MAP_INIT(KH_LOCAL, kmer_map_t, kmap, uint64_t, char*, kh_hash_uint64, kh_eq_generic)
 
-// Global lookup table (populated in init_tables)
-unsigned char seq_nt4_table[256];
+// Fully populated, static const table for maximum compiler optimization.
+// Maps: A/a->0, C/c->1, G/g->2, T/t/U/u->3, Everything else->4
+static const unsigned char seq_nt4_table[256] = {
+    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
+    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
+    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,
+    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
+    4, 0, 4, 1,  4, 4, 4, 2,  4, 4, 4, 4,  4, 4, 4, 4, // 64: @ A B C D E F G H I J K L M N O
+    4, 4, 4, 4,  3, 3, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, // 80: P Q R S T U V W X Y Z [ \ ] ^ _
+    4, 0, 4, 1,  4, 4, 4, 2,  4, 4, 4, 4,  4, 4, 4, 4, // 96: ` a b c d e f g h i j k l m n o
+    4, 4, 4, 4,  3, 3, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, // 112: p q r s t u v w x y z { | } ~ DEL
+    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
+    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
+    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
+    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
+    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
+    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
+    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4, 
+    4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4,  4, 4, 4, 4
+};
 
-// Initialize the DNA table safely
-void init_tables() {
-    // 1. Set everything to 4 (invalid) by default
-    memset(seq_nt4_table, 4, 256);
-    
-    // 2. Explicitly map valid bases to 0-3
-    // A/a -> 0
-    seq_nt4_table['A'] = 0; seq_nt4_table['a'] = 0;
-    // C/c -> 1
-    seq_nt4_table['C'] = 1; seq_nt4_table['c'] = 1;
-    // G/g -> 2
-    seq_nt4_table['G'] = 2; seq_nt4_table['g'] = 2;
-    // T/t -> 3 (and U/u)
-    seq_nt4_table['T'] = 3; seq_nt4_table['t'] = 3;
-    seq_nt4_table['U'] = 3; seq_nt4_table['u'] = 3;
-}
-
-// C99-compliant strdup
 char *c99_strdup(const char *s) {
     if (!s) return NULL;
     size_t len = strlen(s) + 1;
@@ -48,7 +44,7 @@ int encode_kmer(const char *seq, int len, uint64_t *val) {
     uint64_t x = 0;
     for (int i = 0; i < len; ++i) {
         uint8_t c = seq_nt4_table[(uint8_t)seq[i]];
-        if (c > 3) return 0; // 4 is returned for N, newlines, nulls, etc.
+        if (c > 3) return 0;
         x = (x << 2) | c;
     }
     *val = x;
@@ -56,9 +52,6 @@ int encode_kmer(const char *seq, int len, uint64_t *val) {
 }
 
 int main(int argc, char *argv[]) {
-    // Initialize the lookup table immediately
-    init_tables();
-
     if (argc != 3) {
         fprintf(stderr, "Usage: ./find_kmers <queries.fasta> <genome.fasta>\n");
         return 1;
@@ -71,9 +64,7 @@ int main(int argc, char *argv[]) {
     int absent;
     int k_len = 0; 
 
-    // ----------------------------------------------------------------
     // 1. Load Queries
-    // ----------------------------------------------------------------
     fprintf(stderr, "[INFO] Reading queries from %s...\n", argv[1]);
     fp_query = gzopen(argv[1], "r");
     if (!fp_query) { perror("Failed to open query file"); return 1; }
@@ -81,15 +72,13 @@ int main(int argc, char *argv[]) {
     ks = kseq_init(fp_query);
     uint64_t loaded_count = 0;
 
-    // Detect K
+    // First record to set K
     if (kseq_read(ks) >= 0) {
         k_len = ks->seq.l;
-        if (k_len > 31) {
-            fprintf(stderr, "[ERROR] K-mer length %d exceeds limit of 31.\n", k_len);
+        if (k_len > 31 || k_len == 0) {
+            fprintf(stderr, "[ERROR] Invalid k-mer length: %d\n", k_len);
             return 1;
         }
-        if (k_len == 0) return 1;
-
         fprintf(stderr, "[INFO] Detected k-mer length: %d\n", k_len);
 
         uint64_t packed;
@@ -99,11 +88,10 @@ int main(int argc, char *argv[]) {
             loaded_count++;
         }
     } else {
-        fprintf(stderr, "[ERROR] Query file is empty.\n");
-        return 1;
+        return 1; // Empty file
     }
 
-    // Load rest
+    // Remaining records
     while (kseq_read(ks) >= 0) {
         if (ks->seq.l != k_len) continue;
         uint64_t packed;
@@ -120,9 +108,7 @@ int main(int argc, char *argv[]) {
     
     fprintf(stderr, "[INFO] Loaded %lu unique valid %d-mers.\n", (unsigned long)loaded_count, k_len);
 
-    // ----------------------------------------------------------------
     // 2. Scan Genome
-    // ----------------------------------------------------------------
     fprintf(stderr, "[INFO] Scanning genome %s...\n", argv[2]);
     fp_genome = gzopen(argv[2], "r");
     if (!fp_genome) { perror("Failed to open genome file"); return 1; }
@@ -138,6 +124,7 @@ int main(int argc, char *argv[]) {
         int len = 0;        
         
         for (int i = 0; i < ks->seq.l; ++i) {
+            // Highly optimized table lookup
             uint8_t c = seq_nt4_table[(uint8_t)ks->seq.s[i]];
             
             if (c < 4) {
@@ -146,21 +133,17 @@ int main(int argc, char *argv[]) {
                 len++;
                 
                 if (len >= k_len) {
-                    int start_pos = i - k_len + 1;
-                    int end_pos   = i + 1;
-
-                    // Forward Match
+                    // Check Maps
                     itr = kmap_get(h, fwd_k);
                     if (itr != kh_end(h)) {
                         printf("%s\t%d\t%d\t%s\t0\t+\n", 
-                               ks->name.s, start_pos, end_pos, kh_val(h, itr));
+                            ks->name.s, i - k_len + 1, i + 1, kh_val(h, itr));
                     }
                     
-                    // Reverse Match
                     itr = kmap_get(h, rev_k);
                     if (itr != kh_end(h)) {
                         printf("%s\t%d\t%d\t%s\t0\t-\n", 
-                               ks->name.s, start_pos, end_pos, kh_val(h, itr));
+                            ks->name.s, i - k_len + 1, i + 1, kh_val(h, itr));
                     }
                 }
             } else {
