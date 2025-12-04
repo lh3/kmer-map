@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <assert.h>
 
 #include "kseq.h"
 KSEQ_INIT(gzFile, gzread)
@@ -13,6 +14,14 @@ KHASHL_MAP_INIT(KH_LOCAL, kmermap_t, kmap, uint64_t, char*, kh_hash_uint64, kh_e
 #define kom_malloc(type, cnt)       ((type*)malloc((cnt) * sizeof(type)))
 #define kom_calloc(type, cnt)       ((type*)calloc((cnt), sizeof(type)))
 #define kom_realloc(type, ptr, cnt) ((type*)realloc((ptr), (cnt) * sizeof(type)))
+
+#define kom_grow(type, ptr, __i, __m) do { \
+		if ((__i) >= (__m)) { \
+			(__m) = (__i) + 1; \
+			(__m) += ((__m)>>1) + 16; \
+			(ptr) = kom_realloc(type, (ptr), (__m)); \
+		} \
+	} while (0)
 
 #define kom_roundup64(x) (--(x), (x)|=(x)>>1, (x)|=(x)>>2, (x)|=(x)>>4, (x)|=(x)>>8, (x)|=(x)>>16, (x)|=(x)>>32, ++(x))
 
@@ -130,19 +139,52 @@ uint8_t kom_nt4_table[256] = {
 };
 
 typedef struct {
-	int32_t ksize;
-	kmermap_t *h;
-} kmerdb_t;
+	int32_t m, len;
+	int32_t bid, boff;
+	uint8_t **a;
+} block_arena_t;
 
-char *kom_strdup(const char *src) // strdup() doesn't conform to C99
+block_arena_t *ba_init(int32_t block_len)
+{
+	block_arena_t *ba;
+	ba = kom_calloc(block_arena_t, 1);
+	ba->len = block_len;
+	ba->m = 4;
+	ba->a = kom_malloc(uint8_t*, ba->m);
+	ba->a[0] = kom_calloc(uint8_t, ba->len);
+	return ba;
+}
+
+void *ba_alloc(block_arena_t *ba, int32_t size)
+{
+	void *p;
+	assert(size < ba->len);
+	if (ba->boff + size > ba->len) {
+		ba->boff = 0;
+		++ba->bid;
+		kom_grow(uint8_t*, ba->a, ba->bid, ba->m);
+		ba->a[ba->bid] = kom_calloc(uint8_t, ba->len);
+	}
+	p = (void*)&ba->a[ba->bid][ba->boff];
+	ba->boff += size;
+	return p;
+}
+
+char *ba_strdup(block_arena_t *ba, const char *src) // strdup() doesn't conform to C99
 {
 	size_t len;
 	char *dst;
 	len = strlen(src);
-	dst = kom_malloc(char, len + 1);
+	dst = (char*)ba_alloc(ba, len + 1);
 	memcpy(dst, src, len + 1);
 	return dst;
 }
+
+typedef struct {
+	int32_t ksize;
+	kmermap_t *h;
+	block_arena_t *ba;
+} kmerdb_t;
 
 kmerdb_t *km_read_kmer(const char *fn)
 {
@@ -153,6 +195,7 @@ kmerdb_t *km_read_kmer(const char *fn)
 	if (fp == 0) return 0;
 	ks = kseq_init(fp);
 	db = kom_calloc(kmerdb_t, 1);
+	db->ba = ba_init(0x10000); // 64kb per block
 	db->h = kmap_init();
 	while (kseq_read(ks) >= 0) {
 		int32_t i, absent;
@@ -182,7 +225,7 @@ kmerdb_t *km_read_kmer(const char *fn)
 			fprintf(stderr, "Warning: ignore %s as it is a duplicate\n", ks->name.s);
 			continue;
 		}
-		kh_val(db->h, k) = kom_strdup(ks->name.s);
+		kh_val(db->h, k) = ba_strdup(db->ba, ks->name.s);
 	}
 	kseq_destroy(ks);
 	gzclose(fp);
