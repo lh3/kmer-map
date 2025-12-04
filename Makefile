@@ -16,7 +16,7 @@ endif
 
 all:$(PROG)
 
-kmer-map:kmer-map-manual.o
+kmer-map:kmer-map.o
 		$(CC) -o $@ $< -lz
 
 clean:
@@ -27,4 +27,4 @@ depend:
 
 # DO NOT DELETE
 
-kmer-map-manual.o: kseq.h khashl.h
+kmer-map.o: kseq.h khashl.h
