@@ -1,0 +1,6 @@
+*.o
+kmer-map
+*.dSYM
+*.a
+*~
+a.out
