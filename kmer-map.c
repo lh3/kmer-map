@@ -275,11 +275,11 @@ void km_find_match(const char *fn, const kmerdb_t *db)
 				if (++l >= db->ksize) {
 					khint_t kf, kr;
 					kf = kmap_get(db->h, xf);
-					if (unlikely(kf != kh_end(db->h))) {
+					if (kf != kh_end(db->h)) {
 						kom_sprintf_lite(&out, "%s\t%ld\t%ld\t%s\t%d\t+\n", ks->name.s, (long)(i + 1 - db->ksize), (long)(i + 1), kh_val(db->h, kf), db->ksize);
 					}
 					kr = kmap_get(db->h, xr);
-					if (unlikely(kr != kh_end(db->h))) {
+					if (kr != kh_end(db->h)) {
 						kom_sprintf_lite(&out, "%s\t%ld\t%ld\t%s\t%d\t-\n", ks->name.s, (long)(i + 1 - db->ksize), (long)(i + 1), kh_val(db->h, kr), db->ksize);
 					}
 					// Flush buffer periodically to avoid excessive memory usage
